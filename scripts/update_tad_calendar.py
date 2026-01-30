@@ -212,6 +212,11 @@ def main():
         out = pd.concat([current_df, out], ignore_index=True)
         out = out.drop_duplicates(subset=["ticker", "tad"])
         
+        today = pd.to_datetime(datetime.now().date())
+        out["tad"] = pd.to_datetime(out["tad"], errors="coerce")
+        out["tad_30days"] = out["tad"].where((out["tad"] > today) & (out["tad"] <= today + pd.Timedelta(days=30)))
+        out["tad_5days"]  = out["tad"].where((out["tad"] > today) & (out["tad"] <= today + pd.Timedelta(days=5)))
+        
 
         md = MetaData()
         Table(
@@ -219,6 +224,8 @@ def main():
             md,
             Column("ticker", String(5), nullable=False),
             Column("tad", Date, nullable=False),
+            Column("tad_30days", Date, nullable=True),
+            Column("tad_5days", Date, nullable=True),
             mysql_charset="utf8mb4",
         )
         md.create_all(engine)
@@ -229,7 +236,7 @@ def main():
             con=engine,
             if_exists="replace",
             index=False,
-            dtype={"ticker": String(5), "tad": Date()},
+            dtype={"ticker": String(5), "tad": Date(), "tad_30days": Date(), "tad_5days": Date()},
             method="multi",
             chunksize=1000,
         )
