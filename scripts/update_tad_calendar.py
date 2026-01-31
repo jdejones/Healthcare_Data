@@ -247,7 +247,10 @@ def main():
     
     if len(tad_df) > 0:
         print('Symbols and tads added:\n')
-        print([tad_df[['ticker', 'tad']].to_string(index=False)])
+        print("\n".join(
+            f"{row.ticker} {row.tad}"
+            for row in tad_df[['ticker', 'tad']].itertuples()
+        ))
         
     else:
         print('No symbols or tads found')
