@@ -118,7 +118,7 @@ def clinical_trials_by_company_initial_storage(start_date: str):
             df = pd.concat([df, _df])
 
 
-    database_url = f"mysql+pymysql://root:{news_database}@127.0.0.1:3306/stocks"
+    database_url = f"mysql+pymysql://root:{news_database}@127.0.0.1:3306/healthcare"
     engine = create_engine(
         database_url,
         pool_pre_ping=True,
