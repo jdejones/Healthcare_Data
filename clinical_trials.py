@@ -22,7 +22,7 @@ def clinical_trials_by_company_initial_storage(start_date: str):
     start_date = f'AREA%5BLastUpdatePostDate%5DRANGE%5B{start_date}%2CMAX%5D'
     results = []
 
-    for i in tqdm(range(300, len(companies_lst), BATCH_SIZE), desc="Import From ClinicalTrials.gov"):
+    for i in tqdm(range(0, len(companies_lst), BATCH_SIZE), desc="Import From ClinicalTrials.gov"):
         batch = companies_lst[i:i+BATCH_SIZE]
         for company in batch:
             if company != batch[-1]:
