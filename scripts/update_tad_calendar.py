@@ -35,9 +35,8 @@ def main():
         }
 
         response_fulltext = fullTextSearchApi.get_filings(search_parameters)
-        if len(response_fulltext['filings']) == 0:
-            _filings = False
-            break
+        if (len(response_fulltext['filings']) == 0) and (page == 1):
+            return  print('Fulltext search API returned 0 results.')
         
         for filing in response_fulltext['filings']:
             _ = {
@@ -178,7 +177,9 @@ def main():
                     date_mismatches.append((row.ticker, row.filedAt, row.filingUrl, tad_from_parser[0][1].date(), tad_from_ai))
         df.at[i, 'tad'] = tads
 
-    form_types_no_tad = df.loc[df.tad.str.len() == 0].formType.value_counts()
+    #! The following line began returning an error after having run the script multiple times.
+    #! I need to look at previous commits to see if its use was removed.
+    # form_types_no_tad = df.loc[df.tad.str.len() == 0].formType.value_counts()
 
     tad_df = pd.DataFrame()
     for i, row in df.iterrows():
