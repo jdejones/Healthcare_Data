@@ -18,32 +18,40 @@ from rapidfuzz import process, fuzz
 def clinical_trials_by_company_initial_storage(start_date: str):
     companies_lst = list(healthcare_companies_cleaned.keys())
     BATCH_SIZE = 100
-    companies_str = ''
-    start_date = f'AREA%5BLastUpdatePostDate%5DRANGE%5B{start_date}%2CMAX%5D'
+    start_date = "AREA[LastUpdatePostDate]RANGE[2015-01-01,MAX]"
     results = []
 
     for i in tqdm(range(0, len(companies_lst), BATCH_SIZE), desc="Import From ClinicalTrials.gov"):
         batch = companies_lst[i:i+BATCH_SIZE]
-        for company in batch:
-            if company != batch[-1]:
-                companies_str += f"COVERAGE%5BContains%5D{healthcare_companies_cleaned[company]}%20OR%20"
-            else:
-                companies_str += f"COVERAGE%5BContains%5D{healthcare_companies_cleaned[company]}"
+        companies_terms = [
+            f"COVERAGE[Contains]{healthcare_companies_cleaned[c]}"
+            for c in batch
+            ]
+        companies_query = " OR ".join(companies_terms)
+        
 
+        base_url = "https://clinicaltrials.gov/api/v2/studies"
+        params = {
+            "format": "json",
+            "query.term": start_date,            # keep your existing encoded string, or see note below
+            "pageSize": 1000,
+            "query.spons": companies_query,        # can contain "&" safely now
+            "sort": "LastUpdatePostDate",
+            }
 
-        response = requests.get(f"https://clinicaltrials.gov/api/v2/studies?format=json&query.term={start_date}&pageSize=1000&query.spons={companies_str}&sort=LastUpdatePostDate")
+        response = requests.get(base_url, params=params, timeout=30)
         _response = response.json()
         results.append(_response)
 
         if ('nextPageToken' in _response.keys()) and (_response['nextPageToken']):
             while _response['nextPageToken']:
-                response = requests.get(f"https://clinicaltrials.gov/api/v2/studies?format=json&query.term={start_date}&pageSize=1000&query.spons={companies_str}&sort=LastUpdatePostDate&pageToken={_response['nextPageToken']}")
+                params['pageToken'] = _response['nextPageToken']
+                response = requests.get(base_url, params=params, timeout=30)
                 _response = response.json()
                 results.append(_response)
                 if 'nextPageToken' not in _response.keys():
                     break
-                time.sleep(10)
-        companies_str = ''
+                time.sleep(60)
         
 
     def get_in(obj, path, default=None):
@@ -57,9 +65,9 @@ def clinical_trials_by_company_initial_storage(start_date: str):
         return cur
 
     df = pd.DataFrame()
-    for results in tqdm(results, desc="Constructing DataFrame"):
+    for results in tqdm(results, desc="Constructing Dataframe"):
         for study in results['studies']:
-            # Values (from the JSON paths listed in the In[52] cell)
+            nct_id = get_in(study, ['protocolSection', 'identificationModule', 'nctId'])
             study_start_date = get_in(study, ['protocolSection', 'statusModule', 'startDateStruct', 'date'])
             study_start_type = get_in(study, ['protocolSection', 'statusModule', 'startDateStruct', 'type'])
             primary_completion_date = get_in(study, ['protocolSection', 'statusModule', 'primaryCompletionDateStruct', 'date'])
@@ -89,6 +97,7 @@ def clinical_trials_by_company_initial_storage(start_date: str):
             # IMPORTANT: build as a 1-row record (prevents "All arrays must be of the same length")
             _df = pd.DataFrame([
                 {
+                    'NCT_ID': nct_id,
                     'Study_Start_Date': study_start_date,
                     'Study_Start_Type': study_start_type,
                     'Primary_Completion_Date': primary_completion_date,
@@ -143,7 +152,8 @@ def clinical_trials_by_company_initial_storage(start_date: str):
         s = re.sub(CORP_SUFFIXES, " ", s, flags=re.X)  # remove common suffixes
         s = re.sub(r"\s+", " ", s).strip()
         return s
-
+    # pip install flashtext
+    from flashtext import KeywordProcessor
 
     def build_keyword_processor(name_to_ticker: dict):
         kp = KeywordProcessor(case_sensitive=False)
@@ -154,28 +164,44 @@ def clinical_trials_by_company_initial_storage(start_date: str):
         return kp
 
     def stage_a_assign(df, text_col, name_to_ticker):
+        # kp = build_keyword_processor(name_to_ticker)
+
+        # norm_col = df[text_col].map(normalize)
+        # hits = norm_col.map(lambda s: kp.extract_keywords(s))  # list of tickers found (may include dups)
+
+        # def dedupe_keep_order(xs):
+        #     if not xs:
+        #         return []
+        #     # preserve order, remove duplicates
+        #     return list(dict.fromkeys(xs))
+
+        # df = df.copy()
+        # df["_norm_text"] = norm_col
+        # df["tickers_stage_a"] = hits.map(dedupe_keep_order)  # <-- LIST column
+        # # optional convenience single ticker:
+        # df["ticker_stage_a"] = df["tickers_stage_a"].map(lambda xs: xs[0] if xs else pd.NA)
+        # return df
+        #######################################################
         kp = build_keyword_processor(name_to_ticker)
-
-        norm_col = df[text_col].map(normalize)
-        # FlashText expects the same normalization; we search on normalized text.
-        hits = norm_col.map(lambda s: kp.extract_keywords(s))  # list of tickers found
-
-        # If multiple companies are mentioned, pick the first; or keep the list.
         df = df.copy()
-        df["ticker_stage_a"] = hits.map(lambda xs: xs[0] if xs else pd.NA)
-        df["_norm_text"] = norm_col
+
+        df["_norm_text"] = df[text_col].map(normalize)
+
+        # list of tickers found (e.g. ["ABBV", "PFE"] or [])
+        df["tickers_stage_a"] = df["_norm_text"].map(lambda s: kp.extract_keywords(s) if s else [])
+
         return df
 
+    # pip install rapidfuzz
+    from rapidfuzz import process, fuzz
 
     def stage_b_assign(df, name_to_ticker, threshold=92):
-        # Build choices from normalized company names
         choices = []
         ticker_by_choice = {}
         for name, ticker in name_to_ticker.items():
             c = normalize(name)
             if not c:
                 continue
-            # Optional guard: skip very short single-token names (reduce false positives)
             if len(c) < 4 and " " not in c:
                 continue
             choices.append(c)
@@ -187,7 +213,7 @@ def clinical_trials_by_company_initial_storage(start_date: str):
             match = process.extractOne(
                 norm_text,
                 choices,
-                scorer=fuzz.token_set_ratio,  # good for word reordering / extra words
+                scorer=fuzz.token_set_ratio,
             )
             if match is None:
                 return pd.NA
@@ -195,11 +221,33 @@ def clinical_trials_by_company_initial_storage(start_date: str):
             return ticker_by_choice[choice] if score >= threshold else pd.NA
 
         df = df.copy()
-        needs = df["ticker_stage_a"].isna()
+
+        # Only try fuzzy match when stage A list is empty
+        needs = df["tickers_stage_a"].map(len).eq(0)
         df.loc[needs, "ticker_stage_b"] = df.loc[needs, "_norm_text"].map(best_ticker)
 
-        # final ticker: prefer stage A, else stage B
-        df["ticker"] = df["ticker_stage_a"].combine_first(df["ticker_stage_b"])
+        # # Make stage B also a list (0 or 1 ticker)
+        # df["tickers_stage_b"] = df["ticker_stage_b"].map(lambda t: [] if pd.isna(t) else [t])
+
+        # # Final list: prefer stage A list if present, else stage B list
+        # df["tickers"] = df["tickers_stage_a"].where(~needs, df["tickers_stage_b"])
+
+        # # optional: keep a single-value `ticker` too (first of final list)
+        # df["ticker"] = df["tickers"].map(lambda xs: xs[0] if xs else pd.NA)
+
+        # return df
+        #########################################################
+        # Wrap the stage B scalar into a list (or empty list)
+        df["tickers_stage_b"] = df["ticker_stage_b"].map(
+            lambda x: [x] if (x is not None and not pd.isna(x)) else []
+        )
+
+        # FINAL: column named "ticker" is a list
+        df["ticker"] = df.apply(
+            lambda r: r["tickers_stage_a"] if len(r["tickers_stage_a"]) else r["tickers_stage_b"],
+            axis=1,
+        )
+
         return df
 
     _df = stage_a_assign(_df, text_col="Sponsor_Collaborators_Investigators", name_to_ticker=healthcare_companies_cleaned_inverted)
@@ -222,7 +270,8 @@ def clinical_trials_by_company_initial_storage(start_date: str):
     complex_cols = ['Phase', 'Conditions',
         'Intervention_Treatment', 'Sponsor_Collaborators_Investigators',
         'Keywords_Provided_by', 'Condition_Browse_MeSH_Terms',
-        'Condition_Browse_Ancestor_Terms', 'Intervention_Browse_MeSH_Terms']  # <-- your complex columns
+        'Condition_Browse_Ancestor_Terms', 'Intervention_Browse_MeSH_Terms',
+        "tickers_stage_a", "tickers_stage_b", "ticker"]  # <-- your complex columns
 
     def to_json_or_none(x):
         if x is None or (isinstance(x, float) and pd.isna(x)):
@@ -260,7 +309,7 @@ def clinical_trials_by_company_initial_storage(start_date: str):
         _df[c] = _df[c].map(to_bool_or_none)
 
 
-    str_cols = ['Study_Start_Type', 'Primary_Completion_Type', 'Study_Completion_Type', 'Last_Update_Posted_Type']  # <-- your string columns
+    str_cols = ['NCT_ID', 'Study_Start_Type', 'Primary_Completion_Type', 'Study_Completion_Type', 'Last_Update_Posted_Type']  # <-- your string columns
 
     for c in str_cols:
         # If the column might contain non-strings, normalize to string first (preserving NULLs)
@@ -272,6 +321,7 @@ def clinical_trials_by_company_initial_storage(start_date: str):
     # 4) Choose SQL column types (important for object/JSON columns)
     # If your MySQL version supports JSON, prefer JSON; otherwise use Text.
     dtype_map = {
+        "NCT_ID": String(20),
         "Study_Start_Date": DateTime(),
         "Primary_Completion_Date": DateTime(),
         "Study_Completion_Date": DateTime(),
@@ -294,7 +344,8 @@ def clinical_trials_by_company_initial_storage(start_date: str):
         'Study_Start_Type': String(10),
         'Primary_Completion_Type': String(10),
         'Study_Completion_Type': String(10),
-        'Last_Update_Posted_Type': String(10)
+        'Last_Update_Posted_Type': String(10),
+        'ticker': JSON()
     }
 
     # 5) Write using chunks (30MB is fine, but chunking avoids giant INSERTs)
