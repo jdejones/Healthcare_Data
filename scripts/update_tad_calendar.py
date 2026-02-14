@@ -36,7 +36,8 @@ def main():
 
         response_fulltext = fullTextSearchApi.get_filings(search_parameters)
         if (len(response_fulltext['filings']) == 0) and (page == 1):
-            return  print('Fulltext search API returned 0 results.')
+            print('Fulltext search API returned 0 results.')
+            return
         
         for filing in response_fulltext['filings']:
             _ = {
